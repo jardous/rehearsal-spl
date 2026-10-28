@@ -100,7 +100,10 @@ The display updates at **8 Hz**, independently of hardware panel refresh:
 
 - Main reading: rounded whole dBA, 14×20-pixel seven-segment digits; three
   digits occupy 46 pixels. No fabricated decimal precision.
-- Right: `dBA` plus `F` (FAST), `S` (SLOW), or `EQ` (LAeq,1s).
+- Right: `dBA` bottom-aligned with the big numbers; a compact 3×5-pixel `F`
+  (FAST), `S` (SLOW), or `EQ` (LAeq,1s)
+  sits in the bottom-right corner, with one blank pixel to the right and one
+  between the marker and the level bar.
 - Bottom: `M104 A88` style text: maximum **completed LAeq,1s**, and rolling
   energy average. Average covers available completed seconds until 900 seconds
   have accumulated, then the preceding 15 minutes. It is not a full 15-minute
@@ -108,7 +111,9 @@ The display updates at **8 Hz**, independently of hardware panel refresh:
 - Last two rows: level bar covering 40–110 dBA, clamped at either end.
 - Green below 85, yellow 85 through 95, red above 95 by default. The color/bar
   follow the currently selected mode, not necessarily LAeq.
-- `--` / `OVER RANGE` replace numbers below 35 / above 116 dBA. These
+- Below 35 dBA only the main reading becomes `--`; units, MAX/AVG, mode marker
+  and the clamped level bar remain visible. Above 116 dBA, `OVER RANGE` replaces
+  the measurement display. These
   are conservative display bounds, not verified instrument operating limits.
 - `WARMUP`, `MIC ERROR`, `OVERRUN`, `CLIP`, `DSP ERROR`, or `STALE` replaces
   the reading when invalid. No old measurement is shown as current.

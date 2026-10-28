@@ -13,6 +13,7 @@ class MatrixDisplay {
   uint32_t refreshFrames();
  private:
   void digit(int x, int value, uint16_t color);
+  void modeMarker(const char* text, uint16_t color);
   uint16_t color(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness);
   uint16_t palette(uint8_t position, uint8_t brightness);
   void renderVisual(ViewMode view, const VisualFrame& visual, const Settings& settings,

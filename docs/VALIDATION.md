@@ -148,7 +148,8 @@ rejection, FFT band mapping and energy at 1/4/10 kHz, finite/clipped input
 rejection, waveform bounds, button chords including staggered releases and clock
 wrap, clipping recovery status, and UF2 block format/round-trip/corruption checks.
 The host framebuffer double also checks all five rendering paths for drawing
-bounds, unchanged-frame suppression, stale/error priority and waterfall reset;
+bounds, unchanged-frame suppression, stale/error priority, waterfall reset,
+low-range detail retention, bottom-aligned units and right-aligned 3×5 mode-marker pixels;
 it does not emulate font pixels, panel DMA or refresh timing.
 These are software regression tests, not completed on-device acceptance.
 
@@ -159,7 +160,8 @@ host and framebuffer suites also passed AddressSanitizer/UndefinedBehaviorSaniti
 Fresh builds of `meter`, `mock` and `matrix_test` generated checksum/hash-validated
 application-only UF2 files. After removing visual name headers and expanding
 plots to 64×32, meter static RAM is 92,260 bytes and linked flash usage is
-407,409 bytes including the below-range `--` display (runtime allocations are
+407,629 bytes including the below-range `--` display with retained details and
+compact bottom-right mode markers (runtime allocations are
 additional). These new views
 have not yet been flashed or verified on the board.
 

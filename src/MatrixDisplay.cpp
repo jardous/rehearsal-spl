@@ -39,6 +39,29 @@ void MatrixDisplay::digit(int x, int v, uint16_t c) {
   if (m & 64) matrix_.fillRect(x + 2, 8, 10, 3, c);
 }
 
+void MatrixDisplay::modeMarker(const char* text, uint16_t c) {
+  // A 3x5 font with one blank pixel at the right and above the level bar.
+  int x = 63 - (int(strlen(text)) * 4 - 1);
+  for (; *text; ++text, x += 4) {
+    const uint8_t* rows = nullptr;
+    static const uint8_t f[] = {7, 4, 6, 4, 4}, s[] = {7, 4, 7, 1, 7};
+    static const uint8_t e[] = {7, 4, 6, 4, 7}, q[] = {7, 5, 5, 7, 1};
+    static const uint8_t d[] = {6, 5, 5, 5, 6}, m[] = {5, 7, 7, 5, 5};
+    switch (*text) {
+      case 'F': rows = f; break;
+      case 'S': rows = s; break;
+      case 'E': rows = e; break;
+      case 'Q': rows = q; break;
+      case 'D': rows = d; break;
+      case 'M': rows = m; break;
+      default: continue;
+    }
+    for (int row = 0; row < 5; ++row)
+      for (int col = 0; col < 3; ++col)
+        if (rows[row] & (4 >> col)) matrix_.drawPixel(x + col, 24 + row, c);
+  }
+}
+
 uint16_t MatrixDisplay::palette(uint8_t position, uint8_t brightness) {
   if (position < 85) return color(255 - position * 3, position * 3, 0, brightness);
   if (position < 170) {
@@ -144,10 +167,6 @@ void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode v
       matrix_.setCursor(2, 12);
       matrix_.print("WAIT AUDIO");
     }
-  } else if (db < 35) {
-    matrix_.setTextSize(2);
-    matrix_.setCursor(20, 6);
-    matrix_.print("--");
   } else if (db > 116) {
     // Outside the conservative useful range, don't imply accurate numbers.
     matrix_.setCursor(0, 1);
@@ -158,15 +177,19 @@ void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode v
   } else {
     const auto levelColor = db < s.yellow ? color(0,255,0,s.brightness)
       : db <= s.red ? color(255,200,0,s.brightness) : red;
-    const int value = int(lroundf(db));
-    if (value >= 100) digit(0, value / 100, levelColor);
-    digit(16, (value / 10) % 10, levelColor);
-    digit(32, value % 10, levelColor);
-    matrix_.setCursor(46, 0);
+    if (db < 35) {
+      matrix_.setTextSize(2);
+      matrix_.setCursor(20, 6);
+      matrix_.print("--");
+      matrix_.setTextSize(1);
+    } else {
+      const int value = int(lroundf(db));
+      if (value >= 100) digit(0, value / 100, levelColor);
+      digit(16, (value / 10) % 10, levelColor);
+      digit(32, value % 10, levelColor);
+    }
+    matrix_.setCursor(46, 13); // 7-pixel label shares the large digits' bottom row (19)
     matrix_.print("dBA");
-    matrix_.setCursor(48, 10);
-    matrix_.print(SPL_MOCK_INPUT ? "DM" : s.mode == DisplayMode::Fast ? "F"
-      : s.mode == DisplayMode::Slow ? "S" : "EQ");
     matrix_.setCursor(0, 22);
     char text[16];
     char maxText[5] = "---", avgText[5] = "---";
@@ -175,6 +198,8 @@ void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode v
     if (std::isfinite(avg)) snprintf(avgText, sizeof(avgText), "%d", int(lroundf(avg)));
     snprintf(text, sizeof(text), "M%s A%s", maxText, avgText);
     matrix_.print(text); // maximum 9 glyphs = 54 pixels
+    modeMarker(SPL_MOCK_INPUT ? "DM" : s.mode == DisplayMode::Fast ? "F"
+      : s.mode == DisplayMode::Slow ? "S" : "EQ", white);
     const int length = std::max(0, std::min(64, int((db - 40) * 64 / 70)));
     matrix_.fillRect(0, 30, 64, 2, color(32,32,32,s.brightness));
     matrix_.fillRect(0, 30, length, 2, levelColor);
