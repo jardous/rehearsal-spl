@@ -140,3 +140,46 @@ These are acceptance tests, not claims of completed hardware testing.
 
 Only after those checks can hardware operation be described as validated for
 your assembly. None of these checks would by itself establish IEC compliance.
+
+## Visualisation and UF2 update checks
+
+The host suite now also exercises frame capture/reset boundaries, silence/DC
+rejection, FFT band mapping and energy at 1/4/10 kHz, finite/clipped input
+rejection, waveform bounds, button chords including staggered releases and clock
+wrap, clipping recovery status, and UF2 block format/round-trip/corruption checks.
+The host framebuffer double also checks all five rendering paths for drawing
+bounds, unchanged-frame suppression, stale/error priority and waterfall reset;
+it does not emulate font pixels, panel DMA or refresh timing.
+These are software regression tests, not completed on-device acceptance.
+
+Recorded for the visualisation build on 2026-10-28: **9,459 host checks** with
+rolling enabled, **9,454** disabled, all 14 A-weighting frequency probes, the
+framebuffer suite and four Python UF2 test cases passed. The rolling-enabled
+host and framebuffer suites also passed AddressSanitizer/UndefinedBehaviorSanitizer.
+Fresh builds of `meter`, `mock` and `matrix_test` generated checksum/hash-validated
+application-only UF2 files. After removing visual name headers and expanding
+plots to 64×32, meter static RAM is 92,260 bytes and linked flash usage is
+407,409 bytes including the below-range `--` display (runtime allocations are
+additional). These new views
+have not yet been flashed or verified on the board.
+
+Before accepting the new image on hardware:
+
+1. Retain the known-working original UF2 as recovery. Apply the new app-only
+   UF2 through `MATRXS3BOOT`; verify automatic reboot and standalone cold boot.
+2. Verify holding both buttons cycles all five views exactly once per hold.
+   Release in either order; verify no extra brightness/mode/MAX action. Check
+   original single-button actions still work, including after an aborted chord.
+3. Use `VIEW ...` and `STATUS` to test every view and analysis timing. The mock
+   sine should appear near 1 kHz in spectrum/waterfall. Try ordinary speech/music
+   with the real mic; do not generate hazardous levels to test visuals.
+4. Confirm microphone faults/clipping/staleness override all views, old
+   waterfall/peak history is cleared, and CLIP remains visible through recovery.
+5. In every view, soak-test for at least 30 minutes. Confirm no increasing audio
+   errors/overruns/stalls, stable heap, adequate stack and acceptable UI analysis
+   time. SPL statistics must continue while visualisations are selected.
+6. Check panel power/supply temperature with denser graphics, starting at low
+   brightness. Do not treat brightness settings as current limiting.
+7. Reboot: view returns to SPL; calibration, thresholds, measurement mode and
+   brightness retain their existing NVS settings. Test rollback with the original
+   UF2 without erasing NVS or replacing the bootloader/partition table.

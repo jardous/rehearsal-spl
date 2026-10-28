@@ -46,6 +46,28 @@ To flash another environment, replace `-e meter` with `-e mock` or
 `-e matrix_test`. Output images are `.pio/build/<environment>/firmware.bin`;
 use PlatformIO upload to also write the appropriate bootloader/partition files.
 
+### App-only UF2 updates (recommended with the working TinyUF2 bootloader)
+
+Every build also creates `.pio/build/<environment>/firmware.uf2`. Double-click
+RESET to enter `MATRXS3BOOT`, then copy the **meter** UF2 onto that mounted drive:
+
+```sh
+pio run -e meter
+cp .pio/build/meter/firmware.uf2 /run/media/jiri/MATRXS3BOOT/
+```
+
+The drive should disconnect and the board reboot when the transfer completes.
+This updates only the application, preserving the working bootloader, partition
+table and settings. The UF2 uses ESP32-S3 family `0xc47e5767` and **base 0**:
+TinyUF2 interprets addresses relative to the OTA application partition, NOT as
+absolute flash addresses. Do not rename a `.bin` to `.uf2` or copy a merged
+flash image. The build hook validates the application checksum and SHA-256
+before packaging. To package an existing application manually:
+
+```sh
+python3 tools/make_uf2.py .pio/build/meter/firmware.bin build/meter.uf2
+```
+
 ### Reproducible dependency selection
 
 | Component | Selected version |
@@ -86,7 +108,7 @@ The display updates at **8 Hz**, independently of hardware panel refresh:
 - Last two rows: level bar covering 40–110 dBA, clamped at either end.
 - Green below 85, yellow 85 through 95, red above 95 by default. The color/bar
   follow the currently selected mode, not necessarily LAeq.
-- `LOW RANGE` / `OVER RANGE` replace numbers below 35 / above 116 dBA. These
+- `--` / `OVER RANGE` replace numbers below 35 / above 116 dBA. These
   are conservative display bounds, not verified instrument operating limits.
 - `WARMUP`, `MIC ERROR`, `OVERRUN`, `CLIP`, `DSP ERROR`, or `STALE` replaces
   the reading when invalid. No old measurement is shown as current.
@@ -97,6 +119,7 @@ The display updates at **8 Hz**, independently of hardware panel refresh:
 | Short DOWN | brightness −16, minimum 16 |
 | Hold UP ≥800 ms | FAST → SLOW → LAeq → FAST |
 | Hold DOWN ≥800 ms | reset maximum; next candidate uses a full post-reset second |
+| Hold UP + DOWN together ≥825 ms | cycle SPL → spectrum → waterfall → waveform → reactive → SPL |
 
 Buttons debounce for 25 ms. A long press does not also cause a short press.
 Brightness/mode/thresholds/calibration persist to NVS after 2 seconds without
@@ -106,6 +129,50 @@ Calibration changes clear all accumulated measurements to avoid mixed scales.
 Brightness scales RGB before Protomatter quantization; it does not use a
 nonexistent `setBrightness()` API. Double buffering prevents visible clears,
 and identical frames are not sent again.
+
+### Visualisations
+
+All five views are implemented; SPL measurement and statistics continue in every
+view. Press both buttons together and hold until the view changes, then release
+both. A chord does not also change brightness/measurement mode or reset MAX.
+Single-button controls retain their existing meaning in every view.
+
+- **Spectrum:** 16 logarithmic bands, 60 Hz–16 kHz, low frequencies on the left,
+  with falling peak markers. Values are relative, automatically ranged digital
+  band energy, **not per-band dBA**.
+- **Waterfall:** the same bands as coloured rows; newest at the top, about
+  4 seconds of history at the 8 Hz display rate. History resets on entry/fault.
+- **Waveform:** 64-column min/max envelope of a 2048-sample (~42.7 ms) frame;
+  visual auto-gain is used, not a calibrated amplitude scale.
+- **Reactive:** sparse moving rainbow diamond rings respond to unweighted
+  signal energy. Colours are decorative, not exposure indicators.
+
+Visualisations use the full 64×32 panel without name headers. SPL units and
+invalid-audio/error indications remain visible in their respective displays.
+
+The current view is RAM-only and resets to SPL at power-up. All persisted SPL
+settings keep their original storage format. Use serial `VIEW SPL`,
+`VIEW SPECTRUM`, `VIEW WATERFALL`, `VIEW WAVEFORM` or `VIEW REACTIVE` to select
+a view directly. `STATUS` adds a `# view=...` line including UI analysis timing
+(`visual_us`, `max_visual_us`) and visual-buffer allocation status.
+
+Visual input is unweighted and DC-removed. A 2048-point Hann-windowed FFT gives
+23.44 Hz bin spacing; low-frequency bands have limited resolution and spectral
+leakage. Bands sum energy rather than report power spectral density. The 48 dB
+visual range follows the strongest band with a bounded reference and slow decay.
+Visual auto-ranging never changes microphone gain or the SPL pipeline.
+
+The audio task fills a fixed frame and performs a non-blocking overwrite of a
+one-frame queue. FFT/rendering run on the UI core at up to 8 Hz; late frames are
+discarded, never back-pressured into acquisition. Invalid/stale audio overrides
+all visualisations with its error indication. Visual buffer allocation failure
+leaves SPL available. Real hardware timing/boot/power checks are still required;
+host tests and compilation do not prove uninterrupted acquisition on the board.
+See [validation](docs/VALIDATION.md).
+
+**Power:** filled bars/waterfalls may light many more pixels than the SPL
+digits. Start dim and use an adequately rated panel supply, not an assumed
+computer-USB current budget. Software brightness is not a current limiter.
 
 ## USB serial and calibration
 
@@ -119,6 +186,11 @@ STATUS
 MODE FAST
 MODE SLOW
 MODE LAEQ
+VIEW SPECTRUM
+VIEW WATERFALL
+VIEW WAVEFORM
+VIEW REACTIVE
+VIEW SPL
 BRIGHT 64
 THRESH 85 95
 CAL 94.0
@@ -219,7 +291,9 @@ invalidate readings. Fault recovery discards queued data and resets time
 integrations/history; only an already-valid maximum survives. The driver is
 reinstalled after acquisition faults, not during normal measurement. A stale
 snapshot (>250 ms) is invalidated by the UI. Clipped seconds do not enter MAX
-or the 15-minute average; missing data is not replaced by silence.
+or the 15-minute average; missing data is not replaced by silence. After an
+overload, `CLIP` stays visible until a full clean integration second is available,
+rather than briefly flashing `CLIP` and then showing `WARMUP`.
 
 Set `-DSPL_ENABLE_ROLLING=0` in build flags to omit the 900-float history (~3.6 KB).
 No microphone-specific response equalizer, AGC, noise suppression or Wi-Fi is
@@ -252,7 +326,7 @@ See [recorded verification and hardware checklist](docs/VALIDATION.md).
 
 ## Source layout and license
 
-`Microphone`, `AudioDSP`, `SPLMeter`, `MatrixDisplay`, `Settings` and `main.cpp`
+`Microphone`, `AudioDSP`, `SPLMeter`, `Visualization`, `MatrixDisplay`, `Settings` and `main.cpp`
 are separate modules under `include/` and `src/`. The only alternate entry
 point is the deliberately small `matrix_smoke.cpp` smoke-test environment.
 

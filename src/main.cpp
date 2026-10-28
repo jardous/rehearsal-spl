@@ -10,6 +10,7 @@
 #include "Button.h"
 #include "MatrixDisplay.h"
 #include "Microphone.h"
+#include "Visualization.h"
 
 namespace {
 Settings settings;
@@ -17,7 +18,7 @@ MatrixDisplay display;
 Microphone microphone;
 AudioDSP dsp;
 SPLMeter meter;
-QueueHandle_t snapshots = nullptr, controls = nullptr;
+QueueHandle_t snapshots = nullptr, controls = nullptr, visualInputs = nullptr;
 TaskHandle_t audioTaskHandle = nullptr;
 struct Control { bool resetMax; float calibration; };
 AudioSnapshot latest;
@@ -26,7 +27,13 @@ float initialCalibration = 0;
 uint32_t changedMs = 0, serialDropped = 0, refreshHz = 0;
 char tx[2048];
 size_t txLength = 0, txPosition = 0;
-Button up, down;
+ButtonPair buttonPair;
+ViewMode view = ViewMode::Meter; // RAM-only: always boot into the familiar SPL view
+VisualCapture visualCapture;
+VisualInput pendingVisual;
+VisualFrame visualFrame;
+SpectrumAnalyzer spectrum;
+uint32_t visualUs = 0, maxVisualUs = 0;
 
 // USB work is confined to the UI task. A bounded output queue; drop whole lines
 // instead of back-pressuring the audio task or growing memory.
@@ -77,7 +84,11 @@ void audioTask(void*) {
     Control ctl;
     while (xQueueReceive(controls, &ctl, 0) == pdTRUE) {
       if (ctl.resetMax) meter.resetMaximum();
-      else { meter.setCalibration(ctl.calibration); s.calibration = ctl.calibration; }
+      else {
+        meter.setCalibration(ctl.calibration);
+        s.calibration = ctl.calibration;
+        s.status = AudioStatus::Warming;
+      }
     }
     if (!running) {
       running = microphone.begin();
@@ -100,6 +111,7 @@ void audioTask(void*) {
     const bool stalled = lastRead && nowUs - lastRead > 100000;
     lastRead = nowUs;
     if (!readOk || deadline || stalled) {
+      visualCapture.reset();
       if (deadline || stalled) ++s.deadlineMisses;
       s.status = microphone.overruns() != oldOverruns || deadline || stalled
         ? AudioStatus::Overrun : AudioStatus::MicError;
@@ -133,13 +145,21 @@ void audioTask(void*) {
       s.levels = {};
     } else if (warmupFrames < config::sampleRate) {
       warmupFrames += config::blockFrames; // discard 1 s for mic/DC/IIR startup
-      s.status = AudioStatus::Warming;
+      s.status = integrationStatus(false, s.status);
       s.levels = {};
     } else {
       meter.process(weighted, config::blockFrames);
       s.levels = meter.levels();
-      s.status = s.levels.valid ? AudioStatus::Ok : AudioStatus::Warming;
+      s.status = integrationStatus(s.levels.valid, s.status);
     }
+    if (visualInputs && s.status == AudioStatus::Ok) {
+      for (float sample : input) {
+        if (visualCapture.push(sample)) {
+          visualCapture.frame.timestampMs = millis();
+          xQueueOverwrite(visualInputs, &visualCapture.frame); // never wait for UI/FFT
+        }
+      }
+    } else visualCapture.reset();
     s.processingUs = esp_timer_get_time() - start;
     s.maxProcessingUs = std::max(s.maxProcessingUs, s.processingUs);
     publish(s);
@@ -184,10 +204,15 @@ void command(char* line) {
   float v = 0, w = 0;
   bool ok = false;
   if (!strcmp(name, "HELP") && parts == 1) {
-    output("# HELP | STATUS | CSV ON/OFF | CAL reference_dBA | OFFSET dB | BRIGHT 16..255 | THRESH yellow red | MODE FAST/SLOW/LAEQ | RESET\n# Approximate readings; not IEC 61672 compliant. GPL-3.0-or-later; no warranty. See LICENSE and THIRD_PARTY.md.\n");
+    output("# HELP | STATUS | CSV ON/OFF | CAL reference_dBA | OFFSET dB | BRIGHT 16..255 | THRESH yellow red | MODE FAST/SLOW/LAEQ | VIEW SPL/SPECTRUM/WATERFALL/WAVEFORM/REACTIVE | RESET\n# Approximate readings; not IEC 61672 compliant. GPL-3.0-or-later; no warranty. See LICENSE and THIRD_PARTY.md.\n");
     return;
   }
-  if (!strcmp(name, "STATUS") && parts == 1) { diagnostics(); return; }
+  if (!strcmp(name, "STATUS") && parts == 1) {
+    diagnostics();
+    output("# view=%s visual_buffer=%u visual_us=%lu max_visual_us=%lu\n", viewName(view),
+      unsigned(visualInputs != nullptr), (unsigned long)visualUs, (unsigned long)maxVisualUs);
+    return;
+  }
   if (!strcmp(name, "CSV")) {
     if (!strcmp(args, "ON")) {
       csv = true;
@@ -215,6 +240,14 @@ void command(char* line) {
     if (!strcmp(args, "SLOW")) { settings.mode = DisplayMode::Slow; ok = true; }
     if (!strcmp(args, "LAEQ")) { settings.mode = DisplayMode::Leq; ok = true; }
     if (ok) changed();
+  } else if (!strcmp(name, "VIEW")) {
+    for (unsigned i = 0; i < unsigned(ViewMode::Count); ++i) {
+      if (!strcmp(args, viewName(ViewMode(i)))) {
+        view = ViewMode(i);
+        output("# view=%s (RAM-only)\n", viewName(view));
+        return;
+      }
+    }
   } else if (!strcmp(name, "RESET") && parts == 1) ok = sendControl(true);
   output(ok ? "# OK (settings saved after 2 s idle)\n" : "# ERROR: invalid command, range, unavailable audio or full control queue; HELP\n");
 }
@@ -238,8 +271,13 @@ void serialInput() {
 }
 
 void buttons(uint32_t now) {
-  const auto u = up.update(digitalRead(config::buttonUp) == LOW, now);
-  const auto d = down.update(digitalRead(config::buttonDown) == LOW, now);
+  const auto events = buttonPair.update(digitalRead(config::buttonUp) == LOW,
+                                        digitalRead(config::buttonDown) == LOW, now);
+  const auto u = events.up, d = events.down;
+  if (events.nextView) {
+    view = ViewMode((unsigned(view) + 1) % unsigned(ViewMode::Count));
+    output("# view=%s (RAM-only)\n", viewName(view));
+  }
   if (u == ButtonEvent::Short) {
     settings.brightness = std::min(255, int(settings.brightness) + 16); changed();
   }
@@ -263,6 +301,7 @@ void setup() {
   const bool matrixOk = display.begin(); // timer ISR allocated on Arduino core 1
   snapshots = xQueueCreate(1, sizeof(AudioSnapshot));
   controls = xQueueCreate(8, sizeof(Control));
+  visualInputs = xQueueCreate(1, sizeof(VisualInput)); // optional: SPL works if allocation fails
   if (snapshots && controls) taskStarted = xTaskCreatePinnedToCore(
     audioTask, "audio", 8192, nullptr, 5, &audioTaskHandle, 0) == pdPASS;
   if (!taskStarted) latest.status = AudioStatus::MicError;
@@ -286,7 +325,17 @@ void loop() {
   pumpOutput();
   serialInput();
   static uint32_t displayAt = 0, telemetryAt = 0;
-  if (uint32_t(now - displayAt) >= 125) { displayAt = now; display.render(latest, settings); }
+  if (uint32_t(now - displayAt) >= 125) {
+    displayAt = now;
+    if (view != ViewMode::Meter && latest.status == AudioStatus::Ok && latest.levels.valid
+        && visualInputs && xQueueReceive(visualInputs, &pendingVisual, 0) == pdTRUE) {
+      const int64_t started = esp_timer_get_time();
+      spectrum.process(pendingVisual, visualFrame);
+      visualUs = esp_timer_get_time() - started;
+      maxVisualUs = std::max(maxVisualUs, visualUs);
+    }
+    display.render(latest, settings, view, visualFrame, millis());
+  }
   if (uint32_t(now - telemetryAt) >= 1000) {
     const uint32_t interval = now - telemetryAt;
     telemetryAt = now;

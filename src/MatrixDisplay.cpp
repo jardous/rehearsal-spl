@@ -39,27 +39,119 @@ void MatrixDisplay::digit(int x, int v, uint16_t c) {
   if (m & 64) matrix_.fillRect(x + 2, 8, 10, 3, c);
 }
 
-void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s) {
+uint16_t MatrixDisplay::palette(uint8_t position, uint8_t brightness) {
+  if (position < 85) return color(255 - position * 3, position * 3, 0, brightness);
+  if (position < 170) {
+    position -= 85;
+    return color(0, 255 - position * 3, position * 3, brightness);
+  }
+  position -= 170;
+  return color(position * 3, 0, 255 - position * 3, brightness);
+}
+
+void MatrixDisplay::renderVisual(ViewMode view, const VisualFrame& v, const Settings& s,
+                                 uint32_t now) {
+  const bool fresh = v.timestampMs != visualAt_;
+  visualAt_ = v.timestampMs;
+  if (view == ViewMode::Spectrum || view == ViewMode::Waterfall) {
+    uint8_t levels[visual::bands];
+    for (size_t band = 0; band < visual::bands; ++band) {
+      const float level = std::max(0.0f, std::min(1.0f,
+        (v.bandDB[band] - (v.referenceDB - 48)) / 48));
+      levels[band] = uint8_t(lroundf(level * 255));
+    }
+    if (view == ViewMode::Spectrum) {
+      for (size_t band = 0; band < visual::bands; ++band) {
+        const int height = (int(levels[band]) * 32 + 127) / 255;
+        if (fresh) peaks_[band] = std::max(float(height), peaks_[band] - 0.6f);
+        for (int row = 0; row < height; ++row)
+          matrix_.fillRect(band * 4, 31 - row, 3, 1,
+            row < 20 ? color(0, 220, 100, s.brightness)
+            : row < 28 ? color(255, 180, 0, s.brightness) : color(255, 0, 40, s.brightness));
+        if (peaks_[band] >= 1)
+          matrix_.fillRect(band * 4, 32 - int(peaks_[band]), 3, 1,
+            color(180, 180, 255, s.brightness));
+      }
+    } else {
+      if (fresh) {
+        memmove(waterfall_[1], waterfall_[0], sizeof(waterfall_) - sizeof(waterfall_[0]));
+        memcpy(waterfall_[0], levels, sizeof(levels));
+      }
+      for (int row = 0; row < 32; ++row) {
+        for (size_t band = 0; band < visual::bands; ++band) {
+          const uint8_t level = waterfall_[row][band];
+          if (level > 8)
+            matrix_.fillRect(band * 4, row, 4, 1,
+              palette(uint8_t(170 + int(level) * 85 / 255),
+                      uint16_t(s.brightness) * level / 255));
+        }
+      }
+    }
+  } else if (view == ViewMode::Waveform) {
+    matrix_.drawFastHLine(0, 16, 64, color(12, 18, 24, s.brightness));
+    for (size_t column = 0; column < visual::columns; ++column) {
+      const int top = std::max(0, std::min(31, int(lroundf(16 - 15 * v.waveMax[column]))));
+      const int bottom = std::max(top, std::min(31, int(lroundf(16 - 15 * v.waveMin[column]))));
+      matrix_.drawFastVLine(column, top, bottom - top + 1, color(0, 230, 255, s.brightness));
+    }
+  } else {
+    // Sparse moving diamond rings, not full-screen white. Brightness is still
+    // not a current limiter: use an adequate panel supply for every view.
+    const unsigned phase = now / 40;
+    const uint8_t brightness = uint16_t(s.brightness) * uint8_t(v.strength * 220) / 255;
+    for (int y = 0; y < 32; ++y) {
+      for (int x = 0; x < 64; ++x) {
+        const unsigned distance = std::abs(x - 31) + 2 * std::abs(y - 16);
+        if ((distance + phase) % 10 < 2)
+          matrix_.drawPixel(x, y, palette(uint8_t(distance * 4 + phase * 3), brightness));
+      }
+    }
+  }
+}
+
+void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode view,
+                           const VisualFrame& visualFrame, uint32_t now) {
   if (!ready_) return;
   matrix_.fillScreen(0); // draw offscreen; show only when pixels change
   const auto white = color(255,255,255,s.brightness);
   const auto red = color(255,0,0,s.brightness);
   matrix_.setTextSize(1);
   matrix_.setTextColor(white);
+  if (view != previousView_) {
+    memset(waterfall_, 0, sizeof(waterfall_));
+    memset(peaks_, 0, sizeof(peaks_));
+    visualAt_ = 0;
+    previousView_ = view;
+  }
   const float db = s.mode == DisplayMode::Fast ? a.levels.fast
     : s.mode == DisplayMode::Slow ? a.levels.slow : a.levels.leq1s;
   const bool valid = a.status == AudioStatus::Ok && a.levels.valid && std::isfinite(db);
   if (!valid) {
+    // Never carry a visual history or peak marker across an audio discontinuity.
+    memset(waterfall_, 0, sizeof(waterfall_));
+    memset(peaks_, 0, sizeof(peaks_));
+    visualAt_ = 0;
     matrix_.setTextColor(red);
     matrix_.setCursor(0, 1);
     matrix_.print(statusName(a.status));
     matrix_.setTextSize(2);
     matrix_.setCursor(12, 12);
     matrix_.print("---");
-  } else if (db < 35 || db > 116) {
+  } else if (view != ViewMode::Meter) {
+    if (visualFrame.valid && uint32_t(now - visualFrame.timestampMs) <= config::staleMs) {
+      renderVisual(view, visualFrame, s, now);
+    } else {
+      matrix_.setCursor(2, 12);
+      matrix_.print("WAIT AUDIO");
+    }
+  } else if (db < 35) {
+    matrix_.setTextSize(2);
+    matrix_.setCursor(20, 6);
+    matrix_.print("--");
+  } else if (db > 116) {
     // Outside the conservative useful range, don't imply accurate numbers.
     matrix_.setCursor(0, 1);
-    matrix_.print(db < 35 ? "LOW RANGE" : "OVER RANGE");
+    matrix_.print("OVER RANGE");
     matrix_.setTextSize(2);
     matrix_.setCursor(12, 12);
     matrix_.print("---");

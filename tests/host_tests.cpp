@@ -3,6 +3,7 @@
 #include "Button.h"
 #include "SPLMeter.h"
 #include "SampleFormat.h"
+#include "Visualization.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -51,6 +52,121 @@ static ToneResult tone(double hz, float spl, double dc = 0, float correction = 0
           sqrt(weightedSum / (6 * config::sampleRate)), meter.levels()};
 }
 
+static void testVisualization() {
+  VisualCapture capture;
+  for (unsigned i = 0; i < visual::fftSize * 2 + 17; ++i) {
+    const bool ready = capture.push(float(i));
+    check(ready == ((i + 1) % visual::fftSize == 0), "visual capture exact frame boundary");
+    if (ready) {
+      check(capture.frame.samples[0] == float(i + 1 - visual::fftSize), "visual frame first sample");
+      check(capture.frame.samples[visual::fftSize - 1] == float(i), "visual frame last sample");
+    }
+  }
+  capture.reset();
+  for (unsigned i = 0; i < visual::fftSize; ++i)
+    check(capture.push(0) == (i + 1 == visual::fftSize), "fault discards partial visual frame");
+
+  SpectrumAnalyzer analyzer;
+  VisualInput input;
+  VisualFrame result;
+  input.timestampMs = 1234;
+  analyzer.process(input, result);
+  check(result.valid && result.timestampMs == 1234 && result.strength == 0, "silence visual frame");
+  for (float db : result.bandDB) check(near(db, -120, 0.001), "silence has finite spectral floor");
+  check(SpectrumAnalyzer::bandForFrequency(59) == -1, "below visual range ignored");
+  check(SpectrumAnalyzer::bandForFrequency(16000) == -1, "above visual range ignored");
+  check(SpectrumAnalyzer::bandForFrequency(NAN) == -1, "nonfinite frequency ignored");
+  for (unsigned band = 0; band < visual::bands; ++band) {
+    const double hz = visual::lowHz * std::pow(visual::highHz / visual::lowHz,
+                                             (band + 0.5) / visual::bands);
+    check(SpectrumAnalyzer::bandForFrequency(hz) == int(band), "logarithmic band mapping");
+  }
+  for (double hz : {1000.0, 4000.0, 10000.0}) {
+    for (unsigned i = 0; i < visual::fftSize; ++i)
+      input.samples[i] = 0.1 * std::sin(2 * M_PI * hz * i / config::sampleRate);
+    analyzer.process(input, result);
+    const int band = SpectrumAnalyzer::bandForFrequency(hz);
+    const auto loudest = std::max_element(result.bandDB, result.bandDB + visual::bands);
+    check(result.valid && loudest - result.bandDB == band, "FFT identifies the tone band");
+    check(near(result.bandDB[band], -23.0103, 0.1), "Hann-corrected one-sided tone energy");
+    check(result.strength > 0 && result.strength <= 1, "reactive energy bounded");
+    for (unsigned i = 0; i < visual::columns; ++i) {
+      check(result.waveMin[i] >= -1.00001f && result.waveMax[i] <= 1.00001f
+        && result.waveMin[i] <= result.waveMax[i], "waveform envelope bounded and ordered");
+    }
+  }
+  for (float& x : input.samples) x = 0.25f;
+  analyzer.process(input, result);
+  check(result.valid && result.strength == 0, "visual DC rejected before FFT and waveform");
+  for (float db : result.bandDB) check(near(db, -120, 0.001), "DC has no spectral energy");
+  for (float x : result.waveMin) check(x == 0, "DC has flat waveform");
+  input.samples[0] = NAN;
+  analyzer.process(input, result);
+  check(!result.valid, "NaN visual input rejected, no old frame reused");
+  input.samples[0] = INFINITY;
+  analyzer.process(input, result);
+  check(!result.valid, "infinite visual input rejected");
+  input.samples[0] = 0.9995f;
+  analyzer.process(input, result);
+  check(!result.valid, "clipped visual input rejected");
+  for (unsigned i = 0; i < visual::fftSize; ++i)
+    input.samples[i] = 0.1 * std::sin(2 * M_PI * 1000 * i / config::sampleRate)
+      + 0.02 * std::sin(2 * M_PI * 4000 * i / config::sampleRate) + 0.05;
+  analyzer.process(input, result);
+  const int lowBand = SpectrumAnalyzer::bandForFrequency(1000);
+  const int highBand = SpectrumAnalyzer::bandForFrequency(4000);
+  check(result.valid && near(result.bandDB[lowBand] - result.bandDB[highBand],
+                            20 * std::log10(5), 0.1),
+        "two-tone spectrum preserves relative energy with DC offset");
+  for (unsigned i = 0; i < unsigned(ViewMode::Count); ++i)
+    check(viewName(ViewMode(i))[0] != '\0', "every visual mode has a serial name");
+}
+
+static void testButtonPair() {
+  ButtonPair pair;
+  auto none = [](const ButtonEvents& e) {
+    return !e.nextView && e.up == ButtonEvent::None && e.down == ButtonEvent::None;
+  };
+  check(none(pair.update(true, false, 0)), "pair UP initial debounce");
+  pair.update(true, false, 25);
+  pair.update(false, false, 100);
+  auto e = pair.update(false, false, 125);
+  check(e.up == ButtonEvent::Short && e.down == ButtonEvent::None && !e.nextView,
+        "pair preserves single UP short press");
+  pair.update(false, true, 200);
+  pair.update(false, true, 225);
+  e = pair.update(false, true, 1025);
+  check(e.down == ButtonEvent::Long && e.up == ButtonEvent::None && !e.nextView,
+        "pair preserves single DOWN long press");
+  pair.update(false, false, 1030);
+  pair.update(false, false, 1055);
+  pair.update(true, false, 1100);
+  pair.update(true, false, 1125);
+  check(none(pair.update(true, true, 1150)), "staggered chord consumes single events");
+  check(none(pair.update(true, true, 1925)), "UP long suppressed during chord");
+  check(none(pair.update(true, true, 1974)), "chord waits for debounce plus hold");
+  e = pair.update(true, true, 1975);
+  check(e.nextView && e.up == ButtonEvent::None && e.down == ButtonEvent::None,
+        "chord cycles view without mode/MAX/brightness actions");
+  check(none(pair.update(true, true, 3000)), "held chord only cycles once");
+  check(none(pair.update(false, true, 3010)), "first chord release suppressed");
+  check(none(pair.update(false, true, 3500)), "remaining held button suppressed");
+  check(none(pair.update(false, false, 3510)), "last chord release suppressed");
+  pair.update(true, true, 4000);
+  pair.update(true, true, 4025);
+  check(none(pair.update(false, false, 4100)), "short chord does not change brightness");
+  pair.update(true, true, 4200);
+  pair.update(false, true, 4500);
+  pair.update(true, true, 4600);
+  check(none(pair.update(true, true, 5000)), "interrupted chord restarts hold timer");
+  check(none(pair.update(true, true, 5424)), "solo hold time does not count toward chord");
+  check(pair.update(true, true, 5425).nextView, "resumed chord needs full debounced hold");
+  pair.update(false, false, 5500);
+  pair.update(true, true, UINT32_MAX - 500);
+  e = pair.update(true, true, 324);
+  check(e.nextView, "chord hold works across millis wrap");
+}
+
 int main(int argc, char** argv) {
   if (argc == 3) {
     const auto r = tone(atof(argv[1]), atof(argv[2]));
@@ -58,6 +174,8 @@ int main(int argc, char** argv) {
       r.levels.fast, r.levels.slow, r.levels.leq1s);
     return 0;
   }
+  testVisualization();
+  testButtonPair();
   check(decode24(0) == 0, "decode zero");
   check(decode24(0x7fffffff) == 8388607, "positive full scale / discard low byte");
   check(decode24(0x800000ff) == -8388608, "negative full scale / sign extension");
@@ -84,6 +202,34 @@ int main(int argc, char** argv) {
   check(clipping.clippedSamples == 3, "clip counter");
   input[0] = std::numeric_limits<float>::quiet_NaN();
   check(!dcDSP.process(input, output, 4).finite, "non-finite input flagged");
+
+  check(integrationStatus(false, AudioStatus::Warming) == AudioStatus::Warming,
+        "startup remains WARMUP before valid measurements");
+  check(integrationStatus(false, AudioStatus::Ok) == AudioStatus::Warming,
+        "invalidated clean measurements warm up normally");
+  check(integrationStatus(false, AudioStatus::DSPError) == AudioStatus::Warming,
+        "non-clipping recovery does not show CLIP");
+  check(integrationStatus(false, AudioStatus::Clipping) == AudioStatus::Clipping,
+        "clipping during startup remains visible during settling");
+  SPLMeter clipRecovery;
+  std::vector<float> cleanBlock(config::blockFrames, constantForLevel(80));
+  clipRecovery.process(cleanBlock.data(), cleanBlock.size());
+  clipRecovery.resetContinuity(); // same invalidation used by the audio task on clipping
+  AudioStatus recovery = AudioStatus::Clipping;
+  for (unsigned block = 0; block < config::sampleRate / config::blockFrames; ++block) {
+    clipRecovery.process(cleanBlock.data(), cleanBlock.size());
+    const bool complete = block + 1 == config::sampleRate / config::blockFrames;
+    recovery = integrationStatus(clipRecovery.levels().valid, recovery);
+    check(recovery == (complete ? AudioStatus::Ok : AudioStatus::Clipping),
+          "CLIP persists until exactly one clean second, then returns to OK");
+  }
+  clipRecovery.resetContinuity();
+  recovery = AudioStatus::Clipping;
+  clipRecovery.process(cleanBlock.data(), cleanBlock.size());
+  clipRecovery.resetContinuity(); // another overload restarts the clean second
+  clipRecovery.process(cleanBlock.data(), cleanBlock.size());
+  check(integrationStatus(clipRecovery.levels().valid, recovery) == AudioStatus::Clipping,
+        "repeated overload cannot prematurely clear CLIP");
 
   SPLMeter step;
   std::vector<float> constant(config::sampleRate, constantForLevel(94));

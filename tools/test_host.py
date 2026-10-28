@@ -14,12 +14,21 @@ compile_command = [
     "g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
     "-I", str(ROOT / "include"), str(ROOT / "tests/host_tests.cpp"),
     str(ROOT / "src/AudioDSP.cpp"), str(ROOT / "src/SPLMeter.cpp"),
+    str(ROOT / "src/Visualization.cpp"),
 ]
 subprocess.run(compile_command + ["-o", str(EXE)], check=True)
 subprocess.run([str(EXE)], check=True)
 no_rolling = BUILD / "host_tests_no_rolling"
 subprocess.run(compile_command + ["-DSPL_ENABLE_ROLLING=0", "-o", str(no_rolling)], check=True)
 subprocess.run([str(no_rolling)], check=True)
+display_exe = BUILD / "display_tests"
+subprocess.run([
+    "g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+    "-I", str(ROOT / "tests/stubs"), "-I", str(ROOT / "include"),
+    str(ROOT / "tests/display_tests.cpp"), str(ROOT / "src/MatrixDisplay.cpp"),
+    str(ROOT / "src/SPLMeter.cpp"), "-o", str(display_exe),
+], check=True)
+subprocess.run([str(display_exe)], check=True)
 
 
 def analog_a(hz):
@@ -50,3 +59,4 @@ with (BUILD / "a_weighting_response.csv").open("w") as f:
     writer.writerow(("frequency_hz", "nominal_a_db", "firmware_a_db", "error_db", "laeq_94db_sine"))
     writer.writerows(rows)
 print("PASS: A-weighting response, including 100 Hz, 1 kHz and 10 kHz")
+subprocess.run(["python3", str(ROOT / "tests/test_make_uf2.py")], check=True)

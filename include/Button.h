@@ -22,3 +22,38 @@ class Button {
   bool raw_ = false, stable_ = false, longSent_ = false;
   uint32_t changed_ = 0, started_ = 0;
 };
+
+struct ButtonEvents {
+  ButtonEvent up = ButtonEvent::None, down = ButtonEvent::None;
+  bool nextView = false;
+};
+
+class ButtonPair {
+ public:
+  ButtonEvents update(bool upPressed, bool downPressed, uint32_t now) {
+    ButtonEvents events;
+    events.up = up_.update(upPressed, now);
+    events.down = down_.update(downPressed, now);
+    const bool both = upPressed && downPressed;
+    if (both && !together_) started_ = now;
+    together_ = both;
+    if (!chord_ && both) { chord_ = true; sent_ = false; started_ = now; }
+    if (chord_) {
+      events = {}; // a chord never also changes brightness/mode or resets MAX
+      if (!both) started_ = now;
+      if (both && !sent_ && uint32_t(now - started_) >= 825) {
+        sent_ = true;
+        events.nextView = true;
+      }
+      if (!upPressed && !downPressed) {
+        chord_ = false;
+        up_ = Button{}; down_ = Button{};
+      }
+    }
+    return events;
+  }
+ private:
+  Button up_, down_;
+  bool chord_ = false, sent_ = false, together_ = false;
+  uint32_t started_ = 0;
+};

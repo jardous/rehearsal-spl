@@ -6,6 +6,8 @@
 enum class DisplayMode : uint8_t { Fast, Slow, Leq };
 enum class AudioStatus : uint8_t { Warming, Ok, MicError, Overrun, Clipping, DSPError, Stale };
 const char* statusName(AudioStatus status);
+// Clean audio keeps an overload indication until a full valid second is ready.
+AudioStatus integrationStatus(bool valid, AudioStatus previous);
 
 struct Levels {
   float fast = NAN, slow = NAN, leq1s = NAN, rolling = NAN, maximum = NAN;

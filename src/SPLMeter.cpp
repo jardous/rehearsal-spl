@@ -15,6 +15,11 @@ const char* statusName(AudioStatus s) {
   return "ERROR";
 }
 
+AudioStatus integrationStatus(bool valid, AudioStatus previous) {
+  if (valid) return AudioStatus::Ok;
+  return previous == AudioStatus::Clipping ? AudioStatus::Clipping : AudioStatus::Warming;
+}
+
 SPLMeter::SPLMeter()
   : fastAlpha_(-std::expm1(-1.0f / (config::sampleRate * 0.125f))),
     slowAlpha_(-std::expm1(-1.0f / config::sampleRate)) {}
