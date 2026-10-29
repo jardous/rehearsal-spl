@@ -43,8 +43,9 @@ int main() {
     for (int y = 24; y <= 29; ++y) assert(panel.buffer[y * 64 + 63] == 0);
     for (int y = 0; y < 13; ++y)
       for (int x = 46; x < 64; ++x) assert(panel.buffer[y * 64 + x] == 0);
-    assert(panel.buffer[13 * 64 + 46] != 0 && panel.buffer[19 * 64 + 46] != 0);
-    assert(panel.buffer[20 * 64 + 46] == 0); // dBA baseline matches big digits at row 19
+    for (int y = 13; y < 20; ++y) assert(panel.buffer[y * 64 + 46] == 0);
+    assert(panel.buffer[13 * 64 + 47] != 0 && panel.buffer[19 * 64 + 47] != 0);
+    assert(panel.buffer[20 * 64 + 47] == 0); // dBA baseline matches big digits at row 19
   };
   display.render(audio, settings, ViewMode::Meter, frame, 100);
   assert(panel.text == "dBAM100 A80");

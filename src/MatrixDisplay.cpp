@@ -188,7 +188,7 @@ void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode v
       digit(16, (value / 10) % 10, levelColor);
       digit(32, value % 10, levelColor);
     }
-    matrix_.setCursor(46, 13); // 7-pixel label shares the large digits' bottom row (19)
+    matrix_.setCursor(47, 13); // 7-pixel label shares the large digits' bottom row (19)
     matrix_.print("dBA");
     matrix_.setCursor(0, 22);
     char text[16];
