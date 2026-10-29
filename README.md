@@ -4,6 +4,10 @@ C++ / Arduino / PlatformIO firmware for **Adafruit MatrixPortal S3 (5778)**,
 a conventional **64×32 HUB75 panel**, and **ICS-43434 microphone (6049)**.
 After flashing, it runs from 5 V USB-C without a computer, network or cloud.
 
+![Rehearsal SPL meter showing a green sound level reading on the LED matrix, with the microphone mounted beside it](docs/images/rehearsal-spl-meter.jpg)
+
+*Assembled meter with its LED matrix display and ICS-43434 microphone.*
+
 **Approximate dBA only. Not an IEC 61672-compliant or certified sound level
 meter. Not suitable for legal, occupational-exposure or hearing-safety decisions.**
 Color thresholds are configurable rehearsal indicators, not exposure limits.
