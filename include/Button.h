@@ -18,6 +18,7 @@ class Button {
     }
     return ButtonEvent::None;
   }
+  bool pressed() const { return stable_; }
  private:
   bool raw_ = false, stable_ = false, longSent_ = false;
   uint32_t changed_ = 0, started_ = 0;
@@ -25,7 +26,7 @@ class Button {
 
 struct ButtonEvents {
   ButtonEvent up = ButtonEvent::None, down = ButtonEvent::None;
-  bool nextView = false;
+  int8_t brightnessStep = 0; // +1 brighter, -1 dimmer; never a single-button action
 };
 
 class ButtonPair {
@@ -35,25 +36,36 @@ class ButtonPair {
     events.up = up_.update(upPressed, now);
     events.down = down_.update(downPressed, now);
     const bool both = upPressed && downPressed;
-    if (both && !together_) started_ = now;
-    together_ = both;
-    if (!chord_ && both) { chord_ = true; sent_ = false; started_ = now; }
+    if (both && !(wasUp_ && wasDown_)) {
+      chord_ = true;
+      // Use observed press order, even when the second press is within the
+      // first button's debounce window. Truly simultaneous presses are neutral.
+      direction_ = wasUp_ ? 1 : wasDown_ ? -1 : 0;
+      started_ = now;
+      stepped_ = false;
+    }
     if (chord_) {
-      events = {}; // a chord never also changes brightness/mode or resets MAX
-      if (!both) started_ = now;
-      if (both && !sent_ && uint32_t(now - started_) >= 825) {
-        sent_ = true;
-        events.nextView = true;
+      events = {}; // no program/mode/MAX action, including staggered releases
+      if (both && !stepped_ && uint32_t(now - started_) >= 25) {
+        stepped_ = true;
+        repeated_ = now;
+        events.brightnessStep = direction_;
+      } else if (both && stepped_ && uint32_t(now - repeated_) >= 250) {
+        repeated_ = now; // no catch-up burst after a slow UI frame
+        events.brightnessStep = direction_;
       }
-      if (!upPressed && !downPressed) {
+      if (!upPressed && !downPressed && !up_.pressed() && !down_.pressed()) {
         chord_ = false;
         up_ = Button{}; down_ = Button{};
       }
     }
+    wasUp_ = upPressed;
+    wasDown_ = downPressed;
     return events;
   }
  private:
   Button up_, down_;
-  bool chord_ = false, sent_ = false, together_ = false;
-  uint32_t started_ = 0;
+  bool chord_ = false, stepped_ = false, wasUp_ = false, wasDown_ = false;
+  int8_t direction_ = 0;
+  uint32_t started_ = 0, repeated_ = 0;
 };

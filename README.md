@@ -83,6 +83,7 @@ python3 tools/make_uf2.py .pio/build/meter/firmware.bin build/meter.uf2
 | Protomatter | 1.7.0, Git commit `d55e3bf83306b19651c1905bfb984f3768c2569e` |
 | Adafruit GFX | 1.11.11 |
 | Adafruit BusIO | 1.16.1 |
+| NimBLE-Arduino | 2.5.2 |
 | Xtensa compiler | 8.4.0+2021r2-patch5, selected by pinned platform |
 
 `platformio.ini` pins every linked external library. Protomatter's Arduino
@@ -124,13 +125,21 @@ The display updates at **8 Hz**, independently of hardware panel refresh:
 
 | Control | Action |
 |---|---|
-| Short UP | brightness +16, maximum 255 |
-| Short DOWN | brightness −16, minimum 16 |
+| Short UP | next screen: SPL → spectrum → waterfall → waveform → reactive → clock → SPL |
+| Short DOWN | previous screen, in reverse order |
 | Hold UP ≥800 ms | FAST → SLOW → LAeq → FAST |
 | Hold DOWN ≥800 ms | reset maximum; next candidate uses a full post-reset second |
-| Hold UP + DOWN together ≥825 ms | cycle SPL → spectrum → waterfall → waveform → reactive → SPL |
+| Press UP, then add DOWN while holding UP | brightness +16, maximum 255; repeats while both are held |
+| Press DOWN, then add UP while holding DOWN | brightness −16, minimum 16; repeats while both are held |
 
 Buttons debounce for 25 ms. A long press does not also cause a short press.
+Screen changes happen on short release. For brightness, add the second button
+before the first button's 800 ms long-press action. Both must remain pressed for
+25 ms before the first brightness step; further steps repeat every 250 ms.
+Release either button to stop. A chord never also switches screens, changes the
+measurement mode or resets MAX on release. If both presses are observed in the
+same UI tick, direction is ambiguous and no brightness change is made: release
+one and press it again while holding the other to establish the order.
 Brightness/mode/thresholds/calibration persist to NVS after 2 seconds without
 settings changes. Wait for `# NVS saved` before unplugging. Maximum/history
 are RAM-only and reset at power-up. RESET clears maximum, not rolling history.
@@ -141,10 +150,10 @@ and identical frames are not sent again.
 
 ### Visualisations
 
-All five views are implemented; SPL measurement and statistics continue in every
-view. Press both buttons together and hold until the view changes, then release
-both. A chord does not also change brightness/measurement mode or reset MAX.
-Single-button controls retain their existing meaning in every view.
+All six views are implemented; SPL measurement and statistics continue in every
+view. Tap UP for the next screen or DOWN for the previous screen. Ordered
+two-button presses control brightness without changing screens.
+The controls retain the same meaning in every view.
 
 - **Spectrum:** 16 logarithmic bands, 60 Hz–16 kHz, low frequencies on the left,
   with falling peak markers. Values are relative, automatically ranged digital
@@ -155,13 +164,15 @@ Single-button controls retain their existing meaning in every view.
   visual auto-gain is used, not a calibrated amplitude scale.
 - **Reactive:** sparse moving rainbow diamond rings respond to unweighted
   signal energy. Colours are decorative, not exposure indicators.
+- **Clock:** large 24-hour `HH:MM` with a blinking colon and `DD.MM.YYYY` below,
+  synchronized from an iPhone over BLE CTS; see pairing instructions below.
 
 Visualisations use the full 64×32 panel without name headers. SPL units and
 invalid-audio/error indications remain visible in their respective displays.
 
 The current view is RAM-only and resets to SPL at power-up. All persisted SPL
 settings keep their original storage format. Use serial `VIEW SPL`,
-`VIEW SPECTRUM`, `VIEW WATERFALL`, `VIEW WAVEFORM` or `VIEW REACTIVE` to select
+`VIEW SPECTRUM`, `VIEW WATERFALL`, `VIEW WAVEFORM`, `VIEW REACTIVE` or `VIEW CLOCK` to select
 a view directly. `STATUS` adds a `# view=...` line including UI analysis timing
 (`visual_us`, `max_visual_us`) and visual-buffer allocation status.
 
@@ -174,7 +185,8 @@ Visual auto-ranging never changes microphone gain or the SPL pipeline.
 The audio task fills a fixed frame and performs a non-blocking overwrite of a
 one-frame queue. FFT/rendering run on the UI core at up to 8 Hz; late frames are
 discarded, never back-pressured into acquisition. Invalid/stale audio overrides
-all visualisations with its error indication. Visual buffer allocation failure
+the audio visualisations with its error indication, but not the independent clock.
+Visual buffer allocation failure
 leaves SPL available. Real hardware timing/boot/power checks are still required;
 host tests and compilation do not prove uninterrupted acquisition on the board.
 See [validation](docs/VALIDATION.md).
@@ -182,6 +194,62 @@ See [validation](docs/VALIDATION.md).
 **Power:** filled bars/waterfalls may light many more pixels than the SPL
 digits. Start dim and use an adequately rated panel supply, not an assumed
 computer-USB current budget. Software brightness is not a current limiter.
+
+### iPhone clock / BLE Current Time Service
+
+Available in both `meter` and `mock` (not the panel-only `matrix_test`).
+No Wi-Fi, internet connection, manual time entry or custom iPhone app is needed
+for manual CTS synchronization.
+
+1. Flash the new firmware and power the matrix.
+2. For the first connection, use **nRF Connect** or **LightBlue** on the iPhone
+   to scan for **Rehearsal SPL**, connect and accept the firmware-initiated pairing
+   request. The tested iPhone did not list the unpaired device in normal Bluetooth
+   settings. After pairing it appeared in **Settings → Bluetooth**, where it can
+   be connected without opening the scanner app.
+3. Tap UP/DOWN to reach the clock (DOWN once from SPL), or send `VIEW CLOCK` over USB.
+   Allow time for pairing and service discovery. Until the first valid CTS
+   value arrives, the clock shows dashes and `PAIR PHONE` / `SYNCING`, not a
+   fabricated date. `NO CTS` or `BLE ERROR` indicates discovery/read failure.
+4. `STATUS` reports `clock_valid`, BLE state, connection status, local time with
+   seconds, and `sync_age_s`. `CLOCK SYNC` requests another read on an existing
+   paired connection. `CLOCK FORGET` requests disconnection and removal of
+   stored BLE bonds; also choose **Forget This Device** on the iPhone before
+   pairing again. These commands do not erase SPL calibration/settings.
+
+The matrix is a **BLE peripheral / GATT client**: its advertising solicits CTS
+(`0x1805`), then it reads the phone's Current Time characteristic (`0x2A2B`)
+over the phone-initiated, encrypted connection. It does **not** host a fake CTS
+server waiting for the phone to write time. Bond keys persist in NimBLE's NVS
+storage. Pairing uses Just Works (encrypted/bonded, without MITM verification);
+only pair with the intended device nearby.
+
+Time is read on each connection, CTS notifications are subscribed, and a
+60-second read catches drift or missed phone adjustments. Delayed discovery
+is retried; the phone's GATT Service Changed indication triggers reconnection
+with a fresh service cache. **Automatic reconnection is not currently working on
+the tested iPhone:** after a board restart, no connection or CTS sync occurred
+within 60 seconds with the scanner app closed, despite the saved bond.
+Tap **Rehearsal SPL** in iPhone **Settings → Bluetooth** to reconnect and resync;
+this may be required after each board restart. Seeing the paired entry in
+Settings does not itself guarantee automatic connection. No notification/media
+permissions or ANCS/AMS access is requested.
+
+CTS already supplies the phone's **local** date/time; no UTC or DST offset is
+applied again. Timezone/DST changes take effect at the next successful sync.
+After disconnecting, time continues from the ESP32's 64-bit monotonic timer,
+including midnight/month/leap-year rollover. The bottom-right dot is green
+when connected with a successful sync within 120 seconds, otherwise amber
+(holdover / sync needs attention). Holdover can drift and cannot predict
+timezone or DST changes while the phone is absent.
+
+Clock time is RAM-only: after reset or loss of power it must sync again; an old
+flash-saved timestamp would not be a valid running clock. The selected view still
+resets to SPL on boot. The clock remains usable with a failed/disconnected mic;
+audio errors and statistics remain available through SPL/audio views and serial.
+BLE discovery/pairing run on a separate low-priority task, with the NimBLE host on
+the UI core. Radio/flash interference and actual iPhone compatibility still need
+the [on-device checks](docs/VALIDATION.md#ble-cts-clock).
 
 ## USB serial and calibration
 
@@ -200,6 +268,9 @@ VIEW WATERFALL
 VIEW WAVEFORM
 VIEW REACTIVE
 VIEW SPL
+VIEW CLOCK
+CLOCK SYNC
+CLOCK FORGET
 BRIGHT 64
 THRESH 85 95
 CAL 94.0
@@ -335,7 +406,8 @@ See [recorded verification and hardware checklist](docs/VALIDATION.md).
 
 ## Source layout and license
 
-`Microphone`, `AudioDSP`, `SPLMeter`, `Visualization`, `MatrixDisplay`, `Settings` and `main.cpp`
+`Microphone`, `AudioDSP`, `SPLMeter`, `Visualization`, `MatrixDisplay`, `ClockTime`,
+`BleClock`, `Settings` and `main.cpp`
 are separate modules under `include/` and `src/`. The only alternate entry
 point is the deliberately small `matrix_smoke.cpp` smoke-test environment.
 

@@ -169,9 +169,11 @@ Before accepting the new image on hardware:
 
 1. Retain the known-working original UF2 as recovery. Apply the new app-only
    UF2 through `MATRXS3BOOT`; verify automatic reboot and standalone cold boot.
-2. Verify holding both buttons cycles all five views exactly once per hold.
-   Release in either order; verify no extra brightness/mode/MAX action. Check
-   original single-button actions still work, including after an aborted chord.
+2. With the updated controls, verify UP/DOWN taps cycle all six screens forward
+   and backward. UP-then-DOWN must brighten; DOWN-then-UP must dim, with bounded
+   repeats while both are held. Release in either order; verify no extra screen,
+   measurement-mode or MAX action. Check solo long presses still work, including
+   after an aborted chord.
 3. Use `VIEW ...` and `STATUS` to test every view and analysis timing. The mock
    sine should appear near 1 kHz in spectrum/waterfall. Try ordinary speech/music
    with the real mic; do not generate hazardous levels to test visuals.
@@ -184,4 +186,105 @@ Before accepting the new image on hardware:
    brightness. Do not treat brightness settings as current limiting.
 7. Reboot: view returns to SPL; calibration, thresholds, measurement mode and
    brightness retain their existing NVS settings. Test rollback with the original
-   UF2 without erasing NVS or replacing the bootloader/partition table.
+    UF2 without erasing NVS or replacing the bootloader/partition table.
+
+## BLE CTS clock
+
+Software verification on 2026-11-15:
+
+- Host suites pass with **9,460** checks (rolling) and **9,455** (no rolling),
+  all 14 A-weighting probes and four UF2 tests.
+- The new portable CTS suite checks exact payload length and field ranges,
+  invalid/unknown dates without losing the last good time, 1/256-second
+  fractions, midnight/year/century transitions, 2038, >49-day uptime, backwards
+  phone adjustments and all 146,097 days of a Gregorian 400-year cycle.
+- Framebuffer tests cover all six views, every `HH:MM` combination, date layout,
+  blinking colon, unchanged-frame suppression, holdover indicator, pairing/error
+   placeholders and clock operation independent of microphone faults.
+  The clock and framebuffer suites also pass AddressSanitizer and
+  UndefinedBehaviorSanitizer.
+- `meter`, `mock`, and `matrix_test` build with pinned NimBLE-Arduino 2.5.2 and
+  generate validated application-only UF2 files. The panel smoke test does not
+  link or enable BLE. The older NimBLE 2.3.6 was not retained: its server did not
+  forward inbound notifications to its GATT client.
+- APIs reviewed include inbound-connection `NimBLEServer::getClient`, encrypted
+  bonding, CTS notifications, Service Changed indications and advertising
+  service solicitation. See Apple's
+  [Accessory Design Guidelines](https://developer.apple.com/accessories/Accessory-Design-Guidelines.pdf),
+  sections 57.12.4 and 57.14 (2026-10-30 edition).
+
+**Manual iPhone CTS synchronization was subsequently verified; automatic
+reconnection remains unresolved (see below).** Follow the
+[clock acceptance checklist](CLOCK_TESTING.md), especially pairing/background
+reconnection, Service Changed recovery and real-audio timing under BLE load.
+These software results do not establish radio interoperability or uninterrupted
+hardware acquisition.
+
+### On-device flash / quiet-room smoke test, 2026-11-16
+
+The connected MatrixPortal S3 was positively identified by USB identity and chip
+MAC. The existing 408,000-byte application was read back, checksum/hash-validated
+and packaged as a recovery UF2, with a separate partition/NVS/OTA metadata backup,
+under `build/firmware-backups/20261116-192917-before-cts/`.
+Full-chip readback was abandoned because of slow USB transfer; this is an
+application/settings recovery backup, not a complete flash dump.
+
+The 642,656-byte `meter` application was written only at `0x10000`; esptool
+verified its flash hash. Bootloader, TinyUF2, partition table and NVS addresses
+were not flashed. The partition table and OTA selection read back unchanged.
+The persisted calibration, thresholds and brightness were also unchanged.
+A saved FAST→SLOW measurement-mode change appeared during the session; the
+current setting was left untouched rather than restoring an older NVS image.
+
+After clearing the temporary ROM force-download flag, the new application
+enumerated normally. USB `STATUS` confirmed real microphone input (`mock=0`),
+`status=OK valid=1`, BLE `ADVERTISING`, and unset clock time awaiting the phone.
+The quiet-room sample had zero clips, overruns, errors or deadline misses;
+panel refresh was approximately 68 Hz. `VIEW CLOCK` / `VIEW SPL` commands both
+worked; the board was left in SPL view. Physical display appearance, rehearsal
+overload behavior, iPhone pairing/time synchronization and a long BLE/audio
+soak test remain unverified.
+
+### Manual iPhone CTS and updated buttons, 2026-11-16
+
+The user connected successfully with a BLE scanner. USB `STATUS` subsequently
+confirmed `clock_valid=1 ble=READY connected=1` and advancing local time from
+the iPhone. After the first pairing, the user also saw the device in normal
+iPhone Bluetooth settings. A protected NVS backup contains the NimBLE peer/local
+bond, IRK and CCCD records; no bond secret values were printed or added to Git.
+
+Controls were changed to UP/DOWN short taps for next/previous screen.
+UP-first then DOWN brightens; DOWN-first then UP dims. A chord debounces for
+25 ms, repeats one brightness step every 250 ms while both remain pressed, and
+consumes single-button actions until both are debounced released. Truly
+simultaneous presses have no guessed direction; re-forming an ordered chord
+establishes it. Solo UP/DOWN long actions remain measurement mode / MAX reset.
+
+The updated suites pass **9,494** rolling / **9,489** no-rolling checks, the
+calendar/framebuffer/UF2 suites and all weighting probes. Tests cover next/previous
+wrap, press order within the debounce window, brightness repeat timing, changing
+direction by re-forming a chord, staggered/bounced releases, solo long actions
+and timer wrap. The rolling host suite also passes ASan/UBSan.
+All three firmware environments build.
+
+The updated 642,768-byte meter application was flashed only to the active OTA
+application at `0x10000` and hash-verified, retaining calibration and pairing
+partitions. The previous working clock build and fresh pairing/settings backup
+are retained in ignored, protected directories under `build/firmware-backups/`.
+After a physical RESET and the user's single DOWN tap, USB confirmed
+`view=CLOCK`, proving the new short-press screen selection on the board.
+Physical ordered-brightness gestures still need acceptance testing.
+
+With LightBlue/nRF Connect fully closed and phone Bluetooth enabled, the rebooted
+board was observed for 60 seconds without manual phone reconnection. It stayed
+`ble=ADVERTISING connected=0 clock_valid=0`: **automatic reconnect failed**,
+although the saved bond is present. Audio stayed valid with zero clips, overruns,
+errors or stalls during this check. Do not report iPhone auto-reconnect as fixed.
+The current workaround is manual connection from normal iPhone Bluetooth
+settings; no ANCS, AMS or fake HID profile was added.
+
+An earlier native reconnect pre-check was aborted before resetting because
+USB serial stopped responding. Double RESET did not expose a UF2 drive during
+the button update; physical BOOT+RESET was used for download mode, followed by
+one normal RESET to start the application. The cause of the earlier USB
+unresponsiveness has not been established.

@@ -10,8 +10,15 @@ const char* viewName(ViewMode view) {
     case ViewMode::Waterfall: return "WATERFALL";
     case ViewMode::Waveform: return "WAVEFORM";
     case ViewMode::Reactive: return "REACTIVE";
+    case ViewMode::Clock: return "CLOCK";
     default: return "SPL";
   }
+}
+
+ViewMode stepView(ViewMode view, int direction) {
+  const unsigned count = unsigned(ViewMode::Count);
+  const unsigned step = direction > 0 ? 1 : direction < 0 ? count - 1 : 0;
+  return ViewMode((unsigned(view) + step) % count);
 }
 
 int SpectrumAnalyzer::bandForFrequency(float hz) {

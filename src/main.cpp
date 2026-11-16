@@ -8,6 +8,7 @@
 #include <cstring>
 #include "AudioDSP.h"
 #include "Button.h"
+#include "BleClock.h"
 #include "MatrixDisplay.h"
 #include "Microphone.h"
 #include "Visualization.h"
@@ -204,13 +205,19 @@ void command(char* line) {
   float v = 0, w = 0;
   bool ok = false;
   if (!strcmp(name, "HELP") && parts == 1) {
-    output("# HELP | STATUS | CSV ON/OFF | CAL reference_dBA | OFFSET dB | BRIGHT 16..255 | THRESH yellow red | MODE FAST/SLOW/LAEQ | VIEW SPL/SPECTRUM/WATERFALL/WAVEFORM/REACTIVE | RESET\n# Approximate readings; not IEC 61672 compliant. GPL-3.0-or-later; no warranty. See LICENSE and THIRD_PARTY.md.\n");
+    output("# HELP | STATUS | CSV ON/OFF | CAL reference_dBA | OFFSET dB | BRIGHT 16..255 | THRESH yellow red | MODE FAST/SLOW/LAEQ | VIEW SPL/SPECTRUM/WATERFALL/WAVEFORM/REACTIVE/CLOCK | CLOCK SYNC/FORGET | RESET\n# Approximate readings; not IEC 61672 compliant. GPL-3.0-or-later; no warranty. See LICENSE and THIRD_PARTY.md.\n");
     return;
   }
   if (!strcmp(name, "STATUS") && parts == 1) {
     diagnostics();
     output("# view=%s visual_buffer=%u visual_us=%lu max_visual_us=%lu\n", viewName(view),
       unsigned(visualInputs != nullptr), (unsigned long)visualUs, (unsigned long)maxVisualUs);
+    const auto clock = bleClock::snapshot();
+    const auto& t = clock.local;
+    output("# clock_valid=%u ble=%s connected=%u local=%04u-%02u-%02uT%02u:%02u:%02u sync_age_s=%llu\n",
+      unsigned(clock.valid), clockLinkName(clock.link), unsigned(clock.connected),
+      unsigned(t.year), unsigned(t.month), unsigned(t.day), unsigned(t.hour),
+      unsigned(t.minute), unsigned(t.second), (unsigned long long)clock.syncAgeSeconds);
     return;
   }
   if (!strcmp(name, "CSV")) {
@@ -248,6 +255,17 @@ void command(char* line) {
         return;
       }
     }
+  } else if (!strcmp(name, "CLOCK")) {
+    if (!strcmp(args, "SYNC")) {
+      bleClock::requestSync();
+      output("# CTS read requested (requires a connected, paired phone)\n");
+      return;
+    }
+    if (!strcmp(args, "FORGET")) {
+      bleClock::forgetPhone();
+      output("# BLE bond removal requested; also Forget This Device on the iPhone, then pair again\n");
+      return;
+    }
   } else if (!strcmp(name, "RESET") && parts == 1) ok = sendControl(true);
   output(ok ? "# OK (settings saved after 2 s idle)\n" : "# ERROR: invalid command, range, unavailable audio or full control queue; HELP\n");
 }
@@ -274,15 +292,18 @@ void buttons(uint32_t now) {
   const auto events = buttonPair.update(digitalRead(config::buttonUp) == LOW,
                                         digitalRead(config::buttonDown) == LOW, now);
   const auto u = events.up, d = events.down;
-  if (events.nextView) {
-    view = ViewMode((unsigned(view) + 1) % unsigned(ViewMode::Count));
+  if (u == ButtonEvent::Short || d == ButtonEvent::Short) {
+    view = stepView(view, u == ButtonEvent::Short ? 1 : -1);
     output("# view=%s (RAM-only)\n", viewName(view));
   }
-  if (u == ButtonEvent::Short) {
-    settings.brightness = std::min(255, int(settings.brightness) + 16); changed();
-  }
-  if (d == ButtonEvent::Short) {
-    settings.brightness = std::max(16, int(settings.brightness) - 16); changed();
+  if (events.brightnessStep) {
+    const int brightness = std::max(16, std::min(255,
+      int(settings.brightness) + 16 * events.brightnessStep));
+    if (brightness != settings.brightness) {
+      settings.brightness = brightness;
+      changed();
+      output("# brightness=%u\n", unsigned(settings.brightness));
+    }
   }
   if (u == ButtonEvent::Long) {
     settings.mode = DisplayMode((unsigned(settings.mode) + 1) % 3); changed();
@@ -305,7 +326,10 @@ void setup() {
   if (snapshots && controls) taskStarted = xTaskCreatePinnedToCore(
     audioTask, "audio", 8192, nullptr, 5, &audioTaskHandle, 0) == pdPASS;
   if (!taskStarted) latest.status = AudioStatus::MicError;
+  const bool clockOk = bleClock::begin(); // optional BLE only after critical audio resources
   output("# Rehearsal SPL: approximate dBA, NOT IEC 61672 compliant. GPL-3.0-or-later, NO WARRANTY; see LICENSE. HELP for commands.\n# matrix=%u audio_task=%u NVS_loaded=%u mock=%u\n", unsigned(matrixOk), unsigned(taskStarted), unsigned(loaded), unsigned(SPL_MOCK_INPUT));
+  output("# BLE_clock_task=%u name=Rehearsal SPL; pair your iPhone for CTS time, VIEW CLOCK for the clock screen\n",
+    unsigned(clockOk));
 }
 
 void loop() {
@@ -327,14 +351,15 @@ void loop() {
   static uint32_t displayAt = 0, telemetryAt = 0;
   if (uint32_t(now - displayAt) >= 125) {
     displayAt = now;
-    if (view != ViewMode::Meter && latest.status == AudioStatus::Ok && latest.levels.valid
+    if (view != ViewMode::Meter && view != ViewMode::Clock
+        && latest.status == AudioStatus::Ok && latest.levels.valid
         && visualInputs && xQueueReceive(visualInputs, &pendingVisual, 0) == pdTRUE) {
       const int64_t started = esp_timer_get_time();
       spectrum.process(pendingVisual, visualFrame);
       visualUs = esp_timer_get_time() - started;
       maxVisualUs = std::max(maxVisualUs, visualUs);
     }
-    display.render(latest, settings, view, visualFrame, millis());
+    display.render(latest, settings, view, visualFrame, millis(), bleClock::snapshot());
   }
   if (uint32_t(now - telemetryAt) >= 1000) {
     const uint32_t interval = now - telemetryAt;

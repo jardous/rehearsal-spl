@@ -19,6 +19,17 @@ claimed. The default 85/95 dBA colors are not occupational exposure limits.
   A loud, strongly low-frequency signal may overload the mic while its
   A-weighted reading remains well below 116 dBA. A missing CLIP indication does
   not prove absence of distortion. Do not trust near-overload measurements.
+- A `CLIP` indication around 100 dBA does not itself imply a 100 dB microphone
+  limit. At 1 kHz, a steady 100 dB SPL sine nominally has about 20 dB of digital
+  headroom, but drum transients can be much higher than an averaged reading.
+  A weighting also reduces 100 Hz by about 19 dB: 100 dBA of that tone is nearly
+  119 dB unweighted, already near the microphone's overload specification.
+  Firmware uses fixed unity input gain and flags raw samples at `|x| >= 0.999`;
+  lowering calibration/software gain cannot recover microphone-clipped data.
+  One clipped block invalidates measurements until a full clean integration
+  second is available, so repeated short peaks can leave `CLIP` visible.
+  Serial `clips` is cumulative, while `peak` describes only the latest 10 ms
+  block, not the highest peak since the preceding telemetry line.
 - The breakout product describes roughly 50 Hz–15 kHz useful response. The
   microphone, port, PCB, enclosure and mounting have frequency/directional
   errors not represented by the digital filter test. A one-point offset cannot
@@ -74,6 +85,10 @@ claimed. The default 85/95 dBA colors are not occupational exposure limits.
   invalidate continuity instead of silently integrating missing audio. Display
   refresh can pause during flash operations. Power loss during an NVS write may
   leave the previous settings; invalid/missing blobs fall back to defaults.
+- BLE bonding also writes keys to NVS. BLE discovery and its host run separately
+  from audio, but radio/controller interrupts, memory use and flash operations
+  can still affect acquisition. Soak-test pairing, reconnects and clock sync
+  together with real microphone input; any detected stall invalidates audio.
 - Overrun counters count **received driver events**, not exact lost samples.
   A separate deadline counter catches long service gaps even if event reporting
   is saturated. Neither can reconstruct lost audio or prove every possible

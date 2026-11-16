@@ -29,3 +29,12 @@ their original source and copyright/license notices remain in the downloaded
 PlatformIO packages. Arduino-ESP32 and ESP-IDF retain their own LGPL/Apache and
 component licenses. These dependencies are not relicensed by this project.
 No dependency source has been modified.
+
+## BLE dependency
+
+NimBLE-Arduino 2.5.2 (https://github.com/h2zero/NimBLE-Arduino), copyright
+Ryan Powell and esp-nimble-cpp/NimBLE-Arduino contributors, is an Apache-2.0
+dependency. It includes the Apache Mynewt NimBLE stack and other components
+with their own notices. Original license/copyright files remain in the
+PlatformIO library package; they are not relicensed by this project.
+No dependency source has been modified.

@@ -26,17 +26,17 @@ uint16_t MatrixDisplay::color(uint8_t r, uint8_t g, uint8_t b, uint8_t v) {
                           uint16_t(b) * v / 255);
 }
 
-void MatrixDisplay::digit(int x, int v, uint16_t c) {
+void MatrixDisplay::digit(int x, int v, uint16_t c, int y) {
   // Seven-segment digits: 14 x 20 pixels, three fit in x=0..45.
   static const uint8_t masks[] = {0x3f,0x06,0x5b,0x4f,0x66,0x6d,0x7d,0x07,0x7f,0x6f};
   const uint8_t m = masks[v];
-  if (m & 1) matrix_.fillRect(x + 2, 0, 10, 3, c);
-  if (m & 2) matrix_.fillRect(x + 11, 2, 3, 7, c);
-  if (m & 4) matrix_.fillRect(x + 11, 11, 3, 7, c);
-  if (m & 8) matrix_.fillRect(x + 2, 17, 10, 3, c);
-  if (m & 16) matrix_.fillRect(x, 11, 3, 7, c);
-  if (m & 32) matrix_.fillRect(x, 2, 3, 7, c);
-  if (m & 64) matrix_.fillRect(x + 2, 8, 10, 3, c);
+  if (m & 1) matrix_.fillRect(x + 2, y, 10, 3, c);
+  if (m & 2) matrix_.fillRect(x + 11, y + 2, 3, 7, c);
+  if (m & 4) matrix_.fillRect(x + 11, y + 11, 3, 7, c);
+  if (m & 8) matrix_.fillRect(x + 2, y + 17, 10, 3, c);
+  if (m & 16) matrix_.fillRect(x, y + 11, 3, 7, c);
+  if (m & 32) matrix_.fillRect(x, y + 2, 3, 7, c);
+  if (m & 64) matrix_.fillRect(x + 2, y + 8, 10, 3, c);
 }
 
 void MatrixDisplay::modeMarker(const char* text, uint16_t c) {
@@ -132,8 +132,44 @@ void MatrixDisplay::renderVisual(ViewMode view, const VisualFrame& v, const Sett
   }
 }
 
+void MatrixDisplay::renderClock(const ClockSnapshot& clock, const Settings& s) {
+  if (!clock.valid) {
+    matrix_.setCursor(17, 1);
+    matrix_.print("CLOCK");
+    matrix_.setCursor(8, 12);
+    matrix_.print("--:--:--");
+    matrix_.setCursor(2, 24);
+    const char* status = clock.link == ClockLink::Error ? "BLE ERROR"
+      : clock.link == ClockLink::NoCTS ? "NO CTS"
+      : clock.connected ? "SYNCING" : "PAIR PHONE";
+    matrix_.print(status);
+    return;
+  }
+  const auto& t = clock.local;
+  const auto cyan = color(0, 220, 255, s.brightness);
+  // Four 14x20 digits plus a central colon occupy exactly 64 columns.
+  digit(0, t.hour / 10, cyan, 1);
+  digit(15, t.hour % 10, cyan, 1);
+  digit(35, t.minute / 10, cyan, 1);
+  digit(50, t.minute % 10, cyan, 1);
+  if (t.second % 2 == 0) {
+    matrix_.fillRect(30, 6, 3, 3, cyan);
+    matrix_.fillRect(30, 14, 3, 3, cyan);
+  }
+  char date[11];
+  snprintf(date, sizeof(date), "%02u.%02u.%04u", unsigned(t.day) % 100,
+           unsigned(t.month) % 100, unsigned(t.year) % 10000);
+  matrix_.setCursor(2, 24);
+  matrix_.print(date); // ten 6-pixel cells, no clipping or scrolling
+  // Green = fresh CTS; amber = holdover / disconnected / sync needs attention.
+  matrix_.drawPixel(63, 31, clock.connected && clock.link == ClockLink::Ready
+    && clock.syncAgeSeconds <= 120 ? color(0, 255, 0, s.brightness)
+                                 : color(255, 160, 0, s.brightness));
+}
+
 void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode view,
-                           const VisualFrame& visualFrame, uint32_t now) {
+                           const VisualFrame& visualFrame, uint32_t now,
+                           const ClockSnapshot& clock) {
   if (!ready_) return;
   matrix_.fillScreen(0); // draw offscreen; show only when pixels change
   const auto white = color(255,255,255,s.brightness);
@@ -149,7 +185,9 @@ void MatrixDisplay::render(const AudioSnapshot& a, const Settings& s, ViewMode v
   const float db = s.mode == DisplayMode::Fast ? a.levels.fast
     : s.mode == DisplayMode::Slow ? a.levels.slow : a.levels.leq1s;
   const bool valid = a.status == AudioStatus::Ok && a.levels.valid && std::isfinite(db);
-  if (!valid) {
+  if (view == ViewMode::Clock) {
+    renderClock(clock, s); // a clock does not depend on a working microphone
+  } else if (!valid) {
     // Never carry a visual history or peak marker across an audio discontinuity.
     memset(waterfall_, 0, sizeof(waterfall_));
     memset(peaks_, 0, sizeof(peaks_));

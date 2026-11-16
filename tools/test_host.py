@@ -29,6 +29,13 @@ subprocess.run([
     str(ROOT / "src/SPLMeter.cpp"), "-o", str(display_exe),
 ], check=True)
 subprocess.run([str(display_exe)], check=True)
+clock_exe = BUILD / "clock_tests"
+subprocess.run([
+    "g++", "-std=c++17", "-O2", "-Wall", "-Wextra", "-Werror",
+    "-I", str(ROOT / "include"), str(ROOT / "tests/clock_tests.cpp"),
+    str(ROOT / "src/ClockTime.cpp"), "-o", str(clock_exe),
+], check=True)
+subprocess.run([str(clock_exe)], check=True)
 
 
 def analog_a(hz):

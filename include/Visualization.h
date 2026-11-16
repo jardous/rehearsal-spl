@@ -3,8 +3,9 @@
 #include "Config.h"
 #include <cstddef>
 
-enum class ViewMode : uint8_t { Meter, Spectrum, Waterfall, Waveform, Reactive, Count };
+enum class ViewMode : uint8_t { Meter, Spectrum, Waterfall, Waveform, Reactive, Clock, Count };
 const char* viewName(ViewMode view);
+ViewMode stepView(ViewMode view, int direction);
 
 namespace visual {
 constexpr size_t fftSize = 2048;

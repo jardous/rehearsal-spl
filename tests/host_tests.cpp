@@ -125,46 +125,97 @@ static void testVisualization() {
 static void testButtonPair() {
   ButtonPair pair;
   auto none = [](const ButtonEvents& e) {
-    return !e.nextView && e.up == ButtonEvent::None && e.down == ButtonEvent::None;
+    return !e.brightnessStep && e.up == ButtonEvent::None && e.down == ButtonEvent::None;
   };
   check(none(pair.update(true, false, 0)), "pair UP initial debounce");
   pair.update(true, false, 25);
   pair.update(false, false, 100);
   auto e = pair.update(false, false, 125);
-  check(e.up == ButtonEvent::Short && e.down == ButtonEvent::None && !e.nextView,
+  check(e.up == ButtonEvent::Short && e.down == ButtonEvent::None && !e.brightnessStep,
         "pair preserves single UP short press");
+  check(stepView(ViewMode::Meter, 1) == ViewMode::Spectrum, "UP tap selects next program");
+  check(stepView(ViewMode::Clock, 1) == ViewMode::Meter, "next program wraps clock to SPL");
+  check(stepView(ViewMode::Meter, -1) == ViewMode::Clock, "DOWN tap wraps SPL to clock");
+  for (unsigned i = 0; i < unsigned(ViewMode::Count); ++i) {
+    check(stepView(stepView(ViewMode(i), 1), -1) == ViewMode(i),
+          "previous and next programs are inverses");
+    check(stepView(ViewMode(i), 0) == ViewMode(i), "zero program step is unchanged");
+  }
   pair.update(false, true, 200);
   pair.update(false, true, 225);
   e = pair.update(false, true, 1025);
-  check(e.down == ButtonEvent::Long && e.up == ButtonEvent::None && !e.nextView,
+  check(e.down == ButtonEvent::Long && e.up == ButtonEvent::None && !e.brightnessStep,
         "pair preserves single DOWN long press");
   pair.update(false, false, 1030);
   pair.update(false, false, 1055);
   pair.update(true, false, 1100);
   pair.update(true, false, 1125);
   check(none(pair.update(true, true, 1150)), "staggered chord consumes single events");
-  check(none(pair.update(true, true, 1925)), "UP long suppressed during chord");
-  check(none(pair.update(true, true, 1974)), "chord waits for debounce plus hold");
-  e = pair.update(true, true, 1975);
-  check(e.nextView && e.up == ButtonEvent::None && e.down == ButtonEvent::None,
-        "chord cycles view without mode/MAX/brightness actions");
-  check(none(pair.update(true, true, 3000)), "held chord only cycles once");
+  check(none(pair.update(true, true, 1174)), "brightness chord waits for debounce");
+  e = pair.update(true, true, 1175);
+  check(e.brightnessStep == 1 && e.up == ButtonEvent::None && e.down == ButtonEvent::None,
+        "UP first then DOWN brightens without switching program/mode/MAX");
+  check(none(pair.update(true, true, 1424)), "brightness repeat waits 250 ms");
+  check(pair.update(true, true, 1425).brightnessStep == 1, "held brightness chord repeats");
+  e = pair.update(true, true, 1925);
+  check(e.brightnessStep == 1 && e.up == ButtonEvent::None, "UP long suppressed during chord");
+  check(pair.update(true, true, 3000).brightnessStep == 1, "slow UI emits one step, not catch-up burst");
+  check(none(pair.update(true, true, 3001)), "no repeat burst after delayed UI frame");
   check(none(pair.update(false, true, 3010)), "first chord release suppressed");
   check(none(pair.update(false, true, 3500)), "remaining held button suppressed");
   check(none(pair.update(false, false, 3510)), "last chord release suppressed");
+  check(none(pair.update(false, false, 3535)), "debounced chord release has no single action");
   pair.update(true, true, 4000);
   pair.update(true, true, 4025);
-  check(none(pair.update(false, false, 4100)), "short chord does not change brightness");
-  pair.update(true, true, 4200);
-  pair.update(false, true, 4500);
+  check(none(pair.update(true, true, 4500)), "simultaneous press has no guessed brightness direction");
+  check(none(pair.update(false, true, 4510)), "release one button without changing program");
   pair.update(true, true, 4600);
-  check(none(pair.update(true, true, 5000)), "interrupted chord restarts hold timer");
-  check(none(pair.update(true, true, 5424)), "solo hold time does not count toward chord");
-  check(pair.update(true, true, 5425).nextView, "resumed chord needs full debounced hold");
-  pair.update(false, false, 5500);
-  pair.update(true, true, UINT32_MAX - 500);
-  e = pair.update(true, true, 324);
-  check(e.nextView, "chord hold works across millis wrap");
+  check(none(pair.update(true, true, 4624)), "re-formed chord debounces independently");
+  check(pair.update(true, true, 4625).brightnessStep == -1,
+        "DOWN held then UP dims after re-forming the chord");
+  pair.update(true, false, 4700);
+  check(none(pair.update(true, false, 5000)), "brightness stops when either button is released");
+  pair.update(true, true, 5100);
+  check(pair.update(true, true, 5125).brightnessStep == 1,
+        "UP held then DOWN changes the direction back to brighter");
+  pair.update(false, false, 5200);
+  pair.update(false, false, 5225);
+  pair.update(false, true, 5300);
+  pair.update(false, true, 5325);
+  pair.update(false, false, 5400);
+  e = pair.update(false, false, 5425);
+  check(e.down == ButtonEvent::Short && e.up == ButtonEvent::None && !e.brightnessStep,
+        "single DOWN tap works again after chord release");
+
+  // Press order must not be lost when both presses occur within 25 ms.
+  pair = ButtonPair{};
+  pair.update(false, true, 0);
+  pair.update(true, true, 5);
+  check(none(pair.update(true, true, 29)), "near-simultaneous chord still debounces");
+  check(pair.update(true, true, 30).brightnessStep == -1,
+        "DOWN-first order retained within debounce window");
+  check(none(pair.update(true, false, 40)), "first staggered release suppressed");
+  check(none(pair.update(true, false, 1000)), "remaining UP cannot fire long mode action");
+  pair.update(false, false, 1010);
+  check(none(pair.update(true, false, 1015)), "release bounce does not unlock a solo action");
+  pair.update(false, false, 1020);
+  check(none(pair.update(false, false, 1045)), "complete bounced release consumes all events");
+  pair.update(true, false, 1100);
+  pair.update(false, false, 1110);
+  check(none(pair.update(false, false, 1140)), "sub-debounce solo tap ignored");
+  pair.update(true, false, 1200);
+  pair.update(true, false, 1225);
+  check(pair.update(true, false, 2025).up == ButtonEvent::Long, "UP long still selects measurement mode");
+  pair.update(false, false, 2030);
+  check(none(pair.update(false, false, 2055)), "no program step after solo long press");
+
+  pair = ButtonPair{};
+  pair.update(true, false, UINT32_MAX - 40);
+  pair.update(true, true, UINT32_MAX - 20);
+  check(none(pair.update(true, true, 3)), "brightness debounce works across millis wrap");
+  check(pair.update(true, true, 4).brightnessStep == 1, "brightness first step works across wrap");
+  check(none(pair.update(true, true, 253)), "brightness repeat deadline across wrap");
+  check(pair.update(true, true, 254).brightnessStep == 1, "brightness repeats across wrap");
 }
 
 int main(int argc, char** argv) {

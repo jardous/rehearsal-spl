@@ -92,6 +92,7 @@ int main() {
   audio.status = AudioStatus::Clipping;
   audio.levels.valid = false;
   for (unsigned i = 0; i < unsigned(ViewMode::Count); ++i) {
+    if (ViewMode(i) == ViewMode::Clock) continue; // clock is independent of audio faults
     display.render(audio, settings, ViewMode(i), frame, 1100);
     assert(panel.text == "CLIP---"); // errors override every visual view
   }
@@ -132,5 +133,50 @@ int main() {
   audio.levels.fast = 100;
   display.render(audio, settings, ViewMode::Meter, frame, 1100);
   assert(panel.text == "dBAM100 A80"); // 3-digit drawing stays within bounds
-  puts("PASS: framebuffer bounds, five views, fault priority, low-range details and compact mode markers");
+  ClockSnapshot clock;
+  display.render(audio, settings, ViewMode::Clock, frame, 1100, clock);
+  assert(panel.text == "CLOCK--:--:--PAIR PHONE");
+  clock.connected = true;
+  display.render(audio, settings, ViewMode::Clock, frame, 1100, clock);
+  assert(panel.text == "CLOCK--:--:--SYNCING");
+  clock.link = ClockLink::NoCTS;
+  display.render(audio, settings, ViewMode::Clock, frame, 1100, clock);
+  assert(panel.text == "CLOCK--:--:--NO CTS");
+  clock.link = ClockLink::Error;
+  display.render(audio, settings, ViewMode::Clock, frame, 1100, clock);
+  assert(panel.text == "CLOCK--:--:--BLE ERROR");
+  clock.valid = true;
+  clock.link = ClockLink::Ready;
+  clock.local = {2026, 11, 15, 23, 59, 58, 7};
+  audio.status = AudioStatus::MicError;
+  audio.levels.valid = false;
+  display.render(audio, settings, ViewMode::Clock, frame, 1100, clock);
+  assert(panel.text == "15.11.2026"); // microphone failure cannot hide the clock
+  assert(panel.buffer[6 * 64 + 30] && panel.buffer[14 * 64 + 30]);
+  const auto clockShows = panel.shows;
+  display.render(audio, settings, ViewMode::Clock, frame, 1225, clock);
+  assert(panel.shows == clockShows);
+  clock.local.second = 59;
+  display.render(audio, settings, ViewMode::Clock, frame, 2100, clock);
+  assert(panel.buffer[6 * 64 + 30] == 0 && panel.buffer[14 * 64 + 30] == 0);
+  assert(panel.shows == clockShows + 1);
+  const auto freshIndicator = panel.buffer[31 * 64 + 63];
+  clock.connected = false;
+  display.render(audio, settings, ViewMode::Clock, frame, 2100, clock);
+  assert(panel.text == "15.11.2026" && panel.buffer[31 * 64 + 63] != freshIndicator);
+  clock.connected = true;
+  clock.syncAgeSeconds = 121;
+  display.render(audio, settings, ViewMode::Clock, frame, 2100, clock);
+  assert(panel.buffer[31 * 64 + 63] != freshIndicator);
+  for (unsigned hour = 0; hour < 24; ++hour) {
+    for (unsigned minute = 0; minute < 60; ++minute) {
+      clock.local.hour = hour;
+      clock.local.minute = minute;
+      display.render(audio, settings, ViewMode::Clock, frame, 2100, clock);
+      assert(panel.text == "15.11.2026");
+    }
+  }
+  display.render(audio, settings, ViewMode::Meter, frame, 2100, clock);
+  assert(panel.text == "MIC ERROR---"); // audio faults remain visible on audio views
+  puts("PASS: six views, clock/audio independence, clock layout, fault priority and mode markers");
 }
